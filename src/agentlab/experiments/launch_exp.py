@@ -221,8 +221,6 @@ if __name__ == "__main__":
         else:
             exp_args_list, exp_dir = make_study(args.exp_root, study_func, args.extra_kwargs)
 
-    exp_args_list = exp_args_list[:2]
-
     message = f"\nYou are about to launch {len(exp_args_list)} experiments in {exp_dir}.\nPress Y to continue.\n"
 
     if args.auto_accept:
