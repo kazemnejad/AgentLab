@@ -1,18 +1,23 @@
 import abc
-import difflib
 import logging
 import platform
+import random
 import time
 from copy import copy, deepcopy
 from dataclasses import asdict, dataclass
 from textwrap import dedent
-from typing import Literal
+from typing import Literal, Tuple
 from warnings import warn
 
+import PIL
+import PIL.Image
+import PIL.ImageDraw
+import PIL.ImageFont
+import numpy as np
 from browsergym.core.action.base import AbstractActionSet
 from browsergym.core.action.highlevel import HighLevelActionSet
 from browsergym.core.action.python import PythonActionSet
-from browsergym.utils.obs import flatten_axtree_to_str, flatten_dom_to_str, overlay_som, prune_html
+from browsergym.utils.obs import flatten_axtree_to_str, flatten_dom_to_str, prune_html
 
 from agentlab.llm.llm_utils import (
     ParseError,
@@ -80,6 +85,8 @@ class ObsFlags(Flags):
     html_type: str = "pruned_html"
     use_screenshot: bool = True
     use_som: bool = False
+    use_som_colorful_marks: bool = False
+    som_color_min_threshold: int = 100
     extract_visible_tag: bool = False
     extract_clickable_tag: bool = False
     extract_coords: Literal["False", "center", "box"] = "False"
@@ -216,11 +223,11 @@ class Trunkater(Shrinkable):
 
 
 def fit_tokens(
-    shrinkable: Shrinkable,
-    max_prompt_tokens=None,
-    max_iterations=20,
-    model_name="openai/gpt-4",
-    additional_prompts=[""],
+        shrinkable: Shrinkable,
+        max_prompt_tokens=None,
+        max_iterations=20,
+        model_name="openai/gpt-4",
+        additional_prompts=[""],
 ):
     """Shrink a prompt element until it fits `max_prompt_tokens`.
 
@@ -246,7 +253,7 @@ def fit_tokens(
 
     for prompt in additional_prompts:
         max_prompt_tokens -= (
-            count_tokens(prompt, model=model_name) + 1
+                count_tokens(prompt, model=model_name) + 1
         )  # +1 accounts for LangChain token
 
     for _ in range(max_iterations):
@@ -287,13 +294,13 @@ Note: only elements that are visible in the viewport are presented. You might ne
 
 class AXTree(Trunkater):
     def __init__(
-        self,
-        ax_tree,
-        visible_elements_only: bool,
-        visible: bool = True,
-        coord_type=None,
-        visible_tag=True,
-        prefix="",
+            self,
+            ax_tree,
+            visible_elements_only: bool,
+            visible: bool = True,
+            coord_type=None,
+            visible_tag=True,
+            prefix="",
     ) -> None:
         super().__init__(visible=visible, start_trunkate_iteration=10)
         bid_info = """\
@@ -525,7 +532,6 @@ submit an action it will be sent to the browser and you will receive a new page.
 
 
 class ActionPrompt(PromptElement):
-
     _concrete_ex = """
 <action>
 click('a324')
@@ -590,7 +596,6 @@ elements in the page is through bid which are specified in your observations.
 
 
 def make_action_set(action_flags: ActionFlags) -> AbstractActionSet:
-
     if action_flags.action_set == "python":
         action_set = PythonActionSet(strict=action_flags.is_strict)
         if action_flags.demo_mode != "off":
@@ -693,7 +698,7 @@ response from the page.
 
 class HistoryStep(Shrinkable):
     def __init__(
-        self, previous_obs, current_obs, action, memory, thought, flags: ObsFlags, shrink_speed=1
+            self, previous_obs, current_obs, action, memory, thought, flags: ObsFlags, shrink_speed=1
     ) -> None:
         super().__init__()
         # self.html_diff = Diff(
@@ -714,8 +719,8 @@ class HistoryStep(Shrinkable):
             current_obs["last_action_error"],
             visible=(
                 lambda: flags.use_error_logs
-                and current_obs["last_action_error"]
-                and flags.use_past_error_logs
+                        and current_obs["last_action_error"]
+                        and flags.use_past_error_logs
             ),
             prefix="### ",
         )
@@ -751,7 +756,7 @@ class HistoryStep(Shrinkable):
 
 class History(Shrinkable):
     def __init__(
-        self, history_obs, actions, memories, thoughts, flags: ObsFlags, shrink_speed=1
+            self, history_obs, actions, memories, thoughts, flags: ObsFlags, shrink_speed=1
     ) -> None:
         if memories is None:
             memories = [None] * len(actions)
@@ -790,6 +795,128 @@ class History(Shrinkable):
         return "\n".join(prompts) + "\n"
 
 
+def generate_dark_color(min_threshold: int = 100) -> Tuple[int, int, int]:
+    r = random.randint(0, 100)
+    g = random.randint(0, 100)
+    b = random.randint(0, 100)
+
+    while min(r, g, b) > min_threshold:
+        r = random.randint(0, 100)
+        g = random.randint(0, 100)
+        b = random.randint(0, 100)
+
+    return r, g, b
+
+
+def overlay_som(
+        screenshot: np.typing.ArrayLike,
+        extra_properties: dict,
+        fontsize: int = 12,
+        linewidth: int = 2,
+        tag_margin: int = 2,
+        use_random_color: bool = False,
+        min_color_threshold: int = 100,
+):
+    img = PIL.Image.fromarray(screenshot).copy()  # make a copy
+    img = img.convert(mode="RGBA")
+    draw = PIL.ImageDraw.Draw(img)
+
+    font = PIL.ImageFont.load_default(size=fontsize)
+
+    # https://stackoverflow.com/questions/51908563/dotted-or-dashed-line-with-python-pillow/58885306#58885306
+    import math  # math has the fastest sqrt
+
+    def linedashed(draw: PIL.ImageDraw.Draw, x0, y0, x1, y1, fill, width, dashlen=4, ratio=3):
+        dx = x1 - x0  # delta x
+        dy = y1 - y0  # delta y
+        # check whether we can avoid sqrt
+        if dy == 0:
+            vlen = dx
+        elif dx == 0:
+            vlen = dy
+        else:
+            vlen = math.sqrt(dx * dx + dy * dy)  # length of line
+        xa = dx / vlen  # x add for 1px line length
+        ya = dy / vlen  # y add for 1px line length
+        step = dashlen * ratio  # step to the next dash
+        a0 = 0
+        while a0 < vlen:
+            a1 = a0 + dashlen
+            if a1 > vlen:
+                a1 = vlen
+            draw.line(
+                (x0 + xa * a0, y0 + ya * a0, x0 + xa * a1, y0 + ya * a1), fill=fill, width=width
+            )
+            a0 += step
+
+    for bid, properties in extra_properties.items():
+        if properties["set_of_marks"] and properties["bbox"]:
+            x, y, width, height = properties["bbox"]
+            x0, y0 = x, y
+            x1, y1 = x + width, y + height
+
+            # skip small boxes
+            area = (x1 - x0) * (y1 - y0)
+            if area < 20:
+                print(
+                    f'warning: som overlay: skipping bid "{bid}" due to bbox too small (area={area})'
+                )
+                continue
+
+            if use_random_color:
+                color = generate_dark_color(min_threshold=min_color_threshold)
+                fill = (*color, 255)
+            else:
+                fill = (0, 0, 0, 255)
+
+            # draw bounding box with dashed lines
+            linedashed(draw, x0, y0, x1, y0, fill=fill, width=linewidth)
+            linedashed(draw, x1, y0, x1, y1, fill=fill, width=linewidth)
+            linedashed(draw, x1, y1, x0, y1, fill=fill, width=linewidth)
+            linedashed(draw, x0, y1, x0, y0, fill=fill, width=linewidth)
+
+            # get text box size (left, top, right, bottom)
+            tag_box = font.getbbox(
+                bid,
+            )
+
+            # set tag size, including margins
+            tag_size = (
+                (tag_box[2] - tag_box[0] + 2 * (tag_margin + 1)),
+                (tag_box[3] - tag_box[1] + 2 * (tag_margin + 1)),
+            )
+
+            # create tag image with correct size and black background
+            tag_img = PIL.Image.new("RGBA", tag_size, color=fill)
+            tag_draw = PIL.ImageDraw.Draw(tag_img)
+            # write text with 1px horizontal margin
+            tag_draw.text(
+                (-tag_box[0] + tag_margin + 1, -tag_box[1] + tag_margin + 1),
+                bid,
+                font=font,
+                fill=(255, 255, 255, 255),
+                spacing=0,
+            )
+            tag_draw.rectangle(
+                (0, 0, tag_size[0] - 1, tag_size[1] - 1),
+                fill=None,
+                outline=(255, 255, 255, 255),
+                width=1,
+            )
+
+            # draw tag in the source image, upper left of the bounding box
+            tag_pos = (x + 0, y - tag_size[1] / 2 + 4)
+            tag_pos = list(map(round, tag_pos))
+            img.paste(tag_img, tag_pos)
+
+    # convert to RGB (3 channels)
+    img = img.convert(mode="RGB")
+    # convert to a numpy array
+    img = np.array(img)
+
+    return img
+
+
 def make_obs_preprocessor(flags: ObsFlags):
     def obs_mapping(obs: dict):
         obs = copy(obs)
@@ -817,7 +944,10 @@ def make_obs_preprocessor(flags: ObsFlags):
         )
         obs["pruned_html"] = prune_html(obs["dom_txt"])
         obs["screenshot_som"] = overlay_som(
-            obs["screenshot"], extra_properties=obs["extra_element_properties"]
+            obs["screenshot"],
+            extra_properties=obs["extra_element_properties"],
+            use_random_color=flags.use_som_colorful_marks,
+            min_color_threshold=flags.som_color_min_threshold
         )
 
         return obs

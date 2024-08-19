@@ -90,6 +90,23 @@ class OpenAIModelArgs(BaseModelArgs):
 
 
 @dataclass
+class VLLMOpenAIModelArgs(OpenAIModelArgs):
+    model_url: str = None
+
+    def make_model(self):
+        assert self.model_url is not None
+        if "OPENAI_API_KEY" not in os.environ:
+            os.environ["OPENAI_API_KEY"] = "EMPTY"
+
+        return ChatOpenAI(
+            model_name=self.model_name,
+            temperature=self.temperature,
+            max_tokens=self.max_new_tokens,
+            base_url=self.model_url,
+        )
+
+
+@dataclass
 class HuggingFaceModelArgs(BaseModelArgs):
     """Serializable object for instantiating a generic chat model with a HuggingFace model."""
 

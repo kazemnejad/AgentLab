@@ -1,18 +1,39 @@
 import argparse
 import json
 import logging
-import random
-from abc import ABC, abstractmethod
+import os
 from datetime import datetime
 from importlib import import_module
 from pathlib import Path
 
+import requests
 from browsergym.experiments.loop import ExpArgs, yield_all_exp_results
 from joblib import Parallel, delayed
 
-from agentlab.analyze import error_categorization
-from agentlab.llm.llm_configs import CHAT_MODEL_ARGS_DICT
-from agentlab.webarena_setup.check_webarena_servers import check_webarena_servers
+
+def check_website(url):
+    print(f"Checking {url}...")
+    try:
+        response = requests.get(url)
+        if response.status_code == 200:
+            print(f"✅ {url} is responsive.")
+            return True
+        else:
+            print(f"❌ {url} is not responsive.")
+            return False
+    except Exception as e:
+        print(f"❌ {url} is not responsive. Error: {e}")
+        return False
+
+
+def check_webarena_servers():
+    assert check_website(os.environ.get("WA_SHOPPING"))
+    assert check_website(os.environ.get("WA_SHOPPING_ADMIN"))
+    assert check_website(os.environ.get("WA_REDDIT"))
+    assert check_website(os.environ.get("WA_GITLAB"))
+    assert check_website(os.environ.get("WA_WIKIPEDIA"))
+    assert check_website(os.environ.get("WA_MAP"))
+    assert check_website(os.environ.get("WA_HOMEPAGE"))
 
 
 def import_object(path: str):
@@ -155,7 +176,7 @@ if __name__ == "__main__":
         "--benchmark",
         type=str,
         default="miniwob",
-        choices=["miniwob", "workarena.l1", "workarena.l2", "workarena.l3"],
+        choices=["miniwob", "workarena.l1", "workarena.l2", "workarena.l3", "webarena"],
         help="Benchmark to launch",
     )
     parser.add_argument(
@@ -199,6 +220,8 @@ if __name__ == "__main__":
             )
         else:
             exp_args_list, exp_dir = make_study(args.exp_root, study_func, args.extra_kwargs)
+
+    exp_args_list = exp_args_list[:2]
 
     message = f"\nYou are about to launch {len(exp_args_list)} experiments in {exp_dir}.\nPress Y to continue.\n"
 
